@@ -3,6 +3,7 @@ import socket
 import zipfile
 from unittest.mock import MagicMock, patch
 
+import pytest
 from PIL import Image
 
 from epub_builder import (
@@ -240,7 +241,50 @@ def test_build_epub_rejects_svg_images():
     with zipfile.ZipFile(io.BytesIO(result)) as zf:
         image_files = [n for n in zf.namelist() if 'images/' in n]
     assert not image_files
-    assert '<img' not in read_article(result)
+    article = read_article(result)
+    assert '<img' not in article
+    assert 'SVG image omitted for Kindle compatibility' in article
+    assert 'href="http://ex.com/img.svg"' in article
+
+
+@pytest.mark.parametrize(('content', 'label', 'target'), [
+    ('<audio controls src="https://ex.com/audio.mp3">Browser fallback</audio>',
+     'Audio', 'https://ex.com/audio.mp3'),
+    ('<video><source src="/clip.mp4" type="video/mp4"/></video>',
+     'Video', 'http://ex.com/clip.mp4'),
+    ('<iframe src="https://ex.com/player"></iframe>',
+     'Embedded content', 'https://ex.com/player'),
+    ('<object data="https://ex.com/player"><embed src="https://ex.com/player"/></object>',
+     'Embedded content', 'https://ex.com/player'),
+    ('<embed src="https://ex.com/player"/>',
+     'Embedded content', 'https://ex.com/player'),
+    ('<svg><circle r="5"/></svg>', 'SVG image', 'http://ex.com/1'),
+])
+def test_build_epub_replaces_incompatible_media_with_linked_placeholder(content, label, target):
+    entry = {**ENTRIES[0], 'content': f'<p>Before</p>{content}<p>After</p>'}
+    article = read_article(build_epub([entry], '2026-04-30'))
+    assert article.count('omitted for Kindle compatibility') == 1
+    assert f'{label} omitted for Kindle compatibility' in article
+    assert f'href="{target}"' in article
+    assert 'Before' in article and 'After' in article
+    assert 'Browser fallback' not in article
+    for tag in ('audio', 'video', 'source', 'iframe', 'object', 'embed', 'svg'):
+        assert f'<{tag}' not in article
+
+
+@pytest.mark.parametrize('src', ['javascript:alert(1)', 'data:audio/mp3;base64,AAAA', ''])
+def test_media_placeholder_falls_back_to_article_for_missing_or_unsafe_source(src):
+    entry = {**ENTRIES[0], 'content': f'<audio src="{src}"></audio>'}
+    article = read_article(build_epub([entry], '2026-04-30'))
+    assert 'Audio omitted for Kindle compatibility' in article
+    assert 'View original article' in article
+    assert 'javascript:' not in article and 'data:audio' not in article
+
+
+def test_media_placeholder_escapes_source_url():
+    entry = {**ENTRIES[0], 'content': '<audio src="https://ex.com/audio?a=1&amp;b=2"></audio>'}
+    article = read_article(build_epub([entry], '2026-04-30'))
+    assert 'href="https://ex.com/audio?a=1&amp;b=2"' in article
 
 
 def make_image_bytes(width, height, format='JPEG', mode='RGB', noisy=False):

@@ -19,7 +19,10 @@ A single long-running container:
    order you configured, then by publish date. Images are downloaded (capped
    at 5 MB each), downscaled to at most 1200 px and re-encoded as JPEG when
    that makes them smaller, then embedded; HTML is sanitized (scripts, event
-   handlers, unsafe link schemes, and SVG images are stripped).
+   handlers, and unsafe link schemes are stripped). Audio, video, embedded
+   players, and SVG images are replaced with visible Kindle compatibility
+   notes linking to the original media or article when available, so you
+   can see what was omitted.
 4. The EPUB is emailed to your Kindle address through Gmail SMTP.
 5. On success, all included entries are marked read in Miniflux.
 

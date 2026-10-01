@@ -12,6 +12,18 @@ from sync import refresh_feeds, run_sync
 
 logger = logging.getLogger(__name__)
 
+HEARTBEAT_PATH = '/tmp/heartbeat'
+
+
+def beat() -> None:
+    """Liveness marker for the container healthcheck.
+
+    healthchecks.io only pings inside run_job, so a wedged scheduler loop
+    goes unreported until the next daily job. This proves the loop ticked.
+    """
+    with open(HEARTBEAT_PATH, 'w') as fh:
+        fh.write(str(int(time.time())))
+
 
 def run_job(client: MinifluxClient, config: Config) -> None:
     logger.info("Sync started")
@@ -57,12 +69,14 @@ def main() -> None:
     def job() -> None:
         run_job(client, config)
 
+    beat()
     if config.run_on_startup:
         job()
     setup_schedule(config, client, job)
 
     while True:
         schedule.run_pending()
+        beat()
         time.sleep(60)
 
 

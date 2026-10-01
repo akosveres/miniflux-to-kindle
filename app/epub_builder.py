@@ -89,7 +89,43 @@ def _recompress_image(image_data: bytes, media_type: str) -> tuple[bytes, str]:
     return image_data, media_type
 
 
-def _embed_images(book: epub.EpubBook, content: str, seen: dict, allowed_hosts: frozenset = frozenset()) -> str:
+def _replace_incompatible_media(soup: BeautifulSoup, article_url: str = '') -> None:
+    labels = {
+        'audio': 'Audio', 'video': 'Video', 'iframe': 'Embedded content',
+        'object': 'Embedded content', 'embed': 'Embedded content', 'svg': 'SVG image',
+    }
+    for tag in list(soup.find_all(list(labels))):
+        # A parent replacement already removes any nested media or fallback.
+        if tag.parent is None:
+            continue
+        label = labels[tag.name]
+        candidates = [tag.get('src'), tag.get('data')]
+        candidates.extend(source.get('src') for source in tag.find_all('source'))
+        media_url = None
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not candidate.strip():
+                continue
+            resolved = urljoin(article_url, candidate.strip())
+            parsed = urlparse(resolved)
+            if parsed.scheme in ('http', 'https') and parsed.hostname:
+                media_url = resolved
+                break
+        placeholder = soup.new_tag('span')
+        placeholder.string = f'[{label} omitted for Kindle compatibility.'
+        link_url = media_url or article_url
+        parsed = urlparse(link_url)
+        if parsed.scheme in ('http', 'https') and parsed.hostname:
+            placeholder.append(' ')
+            link = soup.new_tag('a', href=link_url)
+            link.string = 'Open original media' if media_url else 'View original article'
+            placeholder.append(link)
+            placeholder.append('.')
+        placeholder.append(']')
+        tag.replace_with(placeholder)
+        tag.decompose()
+
+
+def _embed_images(book: epub.EpubBook, content: str, seen: dict, allowed_hosts: frozenset = frozenset(), article_url: str = '') -> str:
     soup = BeautifulSoup(content, 'html.parser')
     for tag in soup(['script', 'style']):
         tag.decompose()
@@ -97,9 +133,7 @@ def _embed_images(book: epub.EpubBook, content: str, seen: dict, allowed_hosts: 
         for attr in list(tag.attrs):
             if attr.lower().startswith('on'):
                 del tag.attrs[attr]
-    for iframe in soup.find_all('iframe'):
-        src = iframe.get('src', '')
-        iframe.replace_with(f'[Video: {src}]' if src else '[Video]')
+    _replace_incompatible_media(soup, article_url)
     for source in soup.find_all('source'):
         source.decompose()
     for a in soup.find_all('a', href=True):
@@ -125,6 +159,14 @@ def _embed_images(book: epub.EpubBook, content: str, seen: dict, allowed_hosts: 
             media_type = resp.headers.get('Content-Type', '').split(';')[0].strip()
             # SVG can carry scripts and external references — reject it
             if not media_type.startswith('image/') or media_type == 'image/svg+xml':
+                if media_type == 'image/svg+xml':
+                    placeholder = soup.new_tag('span')
+                    placeholder.string = '[SVG image omitted for Kindle compatibility. '
+                    link = soup.new_tag('a', href=src)
+                    link.string = 'Open original image'
+                    placeholder.append(link)
+                    placeholder.append('.]')
+                    img.replace_with(placeholder)
                 img.decompose()
                 continue
             content_length = resp.headers.get('Content-Length')
@@ -185,7 +227,7 @@ def build_epub(
     for i, entry in enumerate(entries_sorted):
         file_name = f'article_{i:04d}.xhtml'
         chapter = epub.EpubHtml(title=entry['title'], file_name=file_name, lang='en')
-        embedded_content = _embed_images(book, entry['content'], seen_images, allowed_hosts)
+        embedded_content = _embed_images(book, entry['content'], seen_images, allowed_hosts, entry['url'])
         safe_title = html.escape(entry['title'])
         safe_url = html.escape(entry['url'], quote=True)
         pub_date = datetime.fromisoformat(entry['published_at']).strftime('%B %-d, %Y')
